@@ -1,9 +1,10 @@
 # puppeteer-extra-plugin-ghost-cursor
 
-> A [`puppeteer-extra`](https://github.com/berstend/puppeteer-extra) / [`playwright-extra`](https://github.com/berstend/puppeteer-extra/tree/master/packages/playwright-extra) plugin for human-like mouse movements powered by Bezier curves.
+> A [`puppeteer-extra`](https://github.com/berstend/puppeteer-extra) / [`playwright-extra`](https://github.com/berstend/puppeteer-extra/tree/master/packages/playwright-extra) plugin for human-like mouse and keyboard interactions.
 
-On **Puppeteer** it wraps [`ghost-cursor`](https://github.com/Xetera/ghost-cursor).
+On **Puppeteer** it wraps [`ghost-cursor`](https://github.com/Xetera/ghost-cursor) for mouse movement.
 On **Playwright** it uses a built-in Bezier curve implementation via `page.mouse`.
+The platform is auto-detected per page at runtime — no configuration needed.
 
 ## Install
 
@@ -17,64 +18,85 @@ npm install puppeteer-extra-plugin-ghost-cursor
 
 ## Usage
 
-### Puppeteer
-
 ```js
+// Puppeteer
 const puppeteer = require('puppeteer-extra')
 const GhostCursorPlugin = require('puppeteer-extra-plugin-ghost-cursor')
 
 puppeteer.use(GhostCursorPlugin())
 
-const browser = await puppeteer.launch({ headless: false })
-const page = await browser.newPage()
+const page = await (await puppeteer.launch({ headless: false })).newPage()
 await page.goto('https://example.com')
 
-await page.humanClick('button#submit')       // curved move + click
-await page.humanMove(500, 300)               // curved move, no click
+await page.humanClick('button#submit')           // curved move + click
+await page.humanType('input#search', 'hello')    // click field + human typing
+await page.humanMove(500, 300)                   // curved move, no click
 await page.ghostCursor.moveTo({ x: 200, y: 400 }) // raw cursor access
 ```
 
-### Playwright
-
 ```js
+// Playwright — identical API, no ghost-cursor dep needed
 const { chromium } = require('playwright-extra')
 const GhostCursorPlugin = require('puppeteer-extra-plugin-ghost-cursor')
 
 chromium.use(GhostCursorPlugin())
 
-const browser = await chromium.launch({ headless: false })
-const page = await browser.newPage()
-await page.goto('https://example.com')
-
-await page.humanClick('button#submit')       // Bezier path + click
-await page.humanMove(500, 300)               // Bezier path, no click
+const page = await (await chromium.launch()).newPage()
+await page.humanClick('button#submit')
+await page.humanType('input#email', 'user@example.com', { wpm: 120 })
 // page.ghostCursor is null on Playwright
 ```
 
-## Autonomous debug mode
+## Features
 
-Enable `debug: true` to get automatic failure recovery and diagnostics:
+### Cursor position memory
+
+The last known cursor position is stored per page. Every `humanMove` and
+`humanClick` call starts from the correct location rather than `(0, 0)`,
+producing coherent paths across multiple interactions.
+
+### Automatic scroll-to-element
+
+If `boundingBox()` returns `null` because the target is off-screen, the plugin
+calls `scrollIntoView({ block: 'center' })` and retries automatically before
+raising an error.
+
+### Variable click position
+
+Clicks land at a random point within the central 60% of the element bounding
+box. Humans do not click the exact pixel centre every time.
+
+### Ease-in/ease-out speed curve
+
+Mouse steps are timed with a sine curve so the cursor accelerates at the
+start of a move and decelerates near the target, matching natural hand motion.
+Total travel time has ±20% random variance.
+
+### Human-like typing (`humanType`)
+
+Keystroke delays vary per character. Pauses are longer after punctuation and
+spaces, and a 7% random "hesitation" pause is inserted to simulate thinking.
+Speed is configurable via `opts.wpm` (default: 180 wpm).
+
+### Autonomous debug mode
+
+Enable `debug: true` to get automatic failure recovery:
 
 ```js
-puppeteer.use(GhostCursorPlugin({
-  debug: true,
-  debugDir: 'my-debug-screenshots'  // default: 'ghost-cursor-debug'
-}))
+puppeteer.use(GhostCursorPlugin({ debug: true, debugDir: 'my-debug' }))
 ```
 
-When `humanClick` fails, the plugin automatically:
+When `humanClick` fails the plugin:
 
-1. Takes a full-page JPEG screenshot and saves it to `debugDir`.
-2. Logs the target selector, current page URL and error message.
-3. Retries **once** using a direct `page.click()` fallback (no cursor movement).
-4. Reports whether the fallback succeeded.
-
-If the fallback also fails, the original error is re-thrown — nothing is silently swallowed.
+1. Saves a full-page JPEG screenshot to `debugDir`.
+2. Logs the selector, page URL and error.
+3. Retries once with a direct `page.click()` / `locator.click()` fallback.
+4. Re-throws the original error only if the fallback also fails.
 
 ```
 [ghost-cursor] humanClick failed on "button#submit" @ https://example.com
   Error   : Element has no boundingBox — hidden or detached
-  Snapshot: ghost-cursor-debug/2025-01-15T10-30-00-000Z_button_submit.jpg
+  Snapshot: my-debug/2025-01-15T10-30-00Z_button_submit.jpg
 [ghost-cursor] Fallback click succeeded for "button#submit".
 ```
 
@@ -82,21 +104,30 @@ If the fallback also fails, the original error is re-thrown — nothing is silen
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `moveDelay` | `number` | `0` | Ms to wait between move completion and click |
-| `debug` | `boolean` | `false` | Enable autonomous debug mode |
-| `debugDir` | `string` | `'ghost-cursor-debug'` | Directory for debug screenshots |
+| `moveDelay` | `number` | `0` | Extra ms between move end and click |
+| `debug` | `boolean` | `false` | Autonomous debug mode |
+| `debugDir` | `string` | `'ghost-cursor-debug'` | Screenshot output directory |
 
 ## API
 
 ### `page.humanClick(selectorOrHandle)`
 
-Moves to the centre of the target element via a Bezier-curved path, then fires a native mouse click. Accepts a CSS selector string or an `ElementHandle` (Puppeteer) / `Locator` (Playwright).
+Moves to the target element via a Bezier-curved path with ease-in/ease-out
+timing, then fires a native mouse click at a random point within the central
+60% of the element. Scrolls the element into view if needed.
 
-Coordinates are resolved via `boundingBox()` rather than ghost-cursor's built-in `click(handle)` to avoid silent misses on elements that are partially off-screen or inside scrollable containers.
+Accepts a CSS selector string, `ElementHandle` (Puppeteer), or `Locator`
+(Playwright).
 
 ### `page.humanMove(x, y)`
 
-Moves the cursor to the given viewport coordinates via a Bezier-curved path, without clicking.
+Moves to the given coordinates via a Bezier path. Updates cursor position
+memory so the next move starts from here.
+
+### `page.humanType(selector, text [, opts])`
+
+Clicks the target field, then types each character with randomised inter-key
+delays. `opts.wpm` controls approximate speed (default: `180`).
 
 ### `page.ghostCursor`
 
