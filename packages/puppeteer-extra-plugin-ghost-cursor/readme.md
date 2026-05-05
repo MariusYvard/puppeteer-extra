@@ -1,14 +1,23 @@
 # puppeteer-extra-plugin-ghost-cursor
 
-> A [`puppeteer-extra`](https://github.com/berstend/puppeteer-extra) plugin that integrates [`ghost-cursor`](https://github.com/Xetera/ghost-cursor) for human-like mouse movements powered by Bezier curves.
+> A [`puppeteer-extra`](https://github.com/berstend/puppeteer-extra) / [`playwright-extra`](https://github.com/berstend/puppeteer-extra/tree/master/packages/playwright-extra) plugin for human-like mouse movements powered by Bezier curves.
+
+On **Puppeteer** it wraps [`ghost-cursor`](https://github.com/Xetera/ghost-cursor).
+On **Playwright** it uses a built-in Bezier curve implementation via `page.mouse`.
 
 ## Install
 
 ```bash
+# Puppeteer
 npm install puppeteer-extra-plugin-ghost-cursor ghost-cursor
+
+# Playwright (ghost-cursor not required)
+npm install puppeteer-extra-plugin-ghost-cursor
 ```
 
 ## Usage
+
+### Puppeteer
 
 ```js
 const puppeteer = require('puppeteer-extra')
@@ -20,47 +29,78 @@ const browser = await puppeteer.launch({ headless: false })
 const page = await browser.newPage()
 await page.goto('https://example.com')
 
-// Human-like click via CSS selector
-await page.humanClick('button#submit')
+await page.humanClick('button#submit')       // curved move + click
+await page.humanMove(500, 300)               // curved move, no click
+await page.ghostCursor.moveTo({ x: 200, y: 400 }) // raw cursor access
+```
 
-// Human-like click via ElementHandle
-const btn = await page.$('button#submit')
-await page.humanClick(btn)
+### Playwright
 
-// Move without clicking
-await page.humanMove(500, 300)
+```js
+const { chromium } = require('playwright-extra')
+const GhostCursorPlugin = require('puppeteer-extra-plugin-ghost-cursor')
 
-// Raw cursor access for custom interactions
-await page.ghostCursor.moveTo({ x: 200, y: 400 })
+chromium.use(GhostCursorPlugin())
+
+const browser = await chromium.launch({ headless: false })
+const page = await browser.newPage()
+await page.goto('https://example.com')
+
+await page.humanClick('button#submit')       // Bezier path + click
+await page.humanMove(500, 300)               // Bezier path, no click
+// page.ghostCursor is null on Playwright
+```
+
+## Autonomous debug mode
+
+Enable `debug: true` to get automatic failure recovery and diagnostics:
+
+```js
+puppeteer.use(GhostCursorPlugin({
+  debug: true,
+  debugDir: 'my-debug-screenshots'  // default: 'ghost-cursor-debug'
+}))
+```
+
+When `humanClick` fails, the plugin automatically:
+
+1. Takes a full-page JPEG screenshot and saves it to `debugDir`.
+2. Logs the target selector, current page URL and error message.
+3. Retries **once** using a direct `page.click()` fallback (no cursor movement).
+4. Reports whether the fallback succeeded.
+
+If the fallback also fails, the original error is re-thrown — nothing is silently swallowed.
+
+```
+[ghost-cursor] humanClick failed on "button#submit" @ https://example.com
+  Error   : Element has no boundingBox — hidden or detached
+  Snapshot: ghost-cursor-debug/2025-01-15T10-30-00-000Z_button_submit.jpg
+[ghost-cursor] Fallback click succeeded for "button#submit".
 ```
 
 ## Options
 
-```js
-GhostCursorPlugin({
-  moveDelay: 150 // ms to wait between move and click (simulates hesitation)
-})
-```
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `moveDelay` | `number` | `0` | Ms to wait between move completion and click |
+| `debug` | `boolean` | `false` | Enable autonomous debug mode |
+| `debugDir` | `string` | `'ghost-cursor-debug'` | Directory for debug screenshots |
 
 ## API
 
 ### `page.humanClick(selectorOrHandle)`
 
-Moves the cursor to the centre of the target element using a Bezier-curved path, then fires a native mouse click.
+Moves to the centre of the target element via a Bezier-curved path, then fires a native mouse click. Accepts a CSS selector string or an `ElementHandle` (Puppeteer) / `Locator` (Playwright).
 
-Accepts either a CSS selector string or an `ElementHandle`. Coordinates are resolved via `ElementHandle.boundingBox()` to ensure reliable clicks on elements that may be partially off-screen or inside scrollable containers.
+Coordinates are resolved via `boundingBox()` rather than ghost-cursor's built-in `click(handle)` to avoid silent misses on elements that are partially off-screen or inside scrollable containers.
 
 ### `page.humanMove(x, y)`
 
-Moves the cursor to the given viewport coordinates using a Bezier-curved path.
+Moves the cursor to the given viewport coordinates via a Bezier-curved path, without clicking.
 
 ### `page.ghostCursor`
 
-The underlying `GhostCursor` instance, for advanced use cases not covered by the helpers above.
-
-## Why `boundingBox()` instead of `cursor.click(handle)` directly?
-
-`ghost-cursor`'s built-in `click(ElementHandle)` calls `elementHandle.clickablePoint()` internally. This can throw or silently miss when the element is partially off-screen or inside a scrollable container. Resolving coordinates via `handle.boundingBox()` first and then dispatching `page.mouse.click(x, y)` after the move is more reliable across different viewport sizes and page layouts.
+The underlying `GhostCursor` instance (Puppeteer only). `null` on Playwright.
 
 ## License
 
